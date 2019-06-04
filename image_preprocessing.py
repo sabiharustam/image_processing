@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import os
 from sklearn.preprocessing import MinMaxScaler
 from skimage import io, measure, exposure
+import h5py
 
 # This is a function that reads a image list from data directory.
 def image_list (DATADIR):
@@ -71,9 +72,16 @@ def read_and_process_image(DATADIR):
     return X, y
 
 
+# No need for keeping the label:
 def read_3D_volume(DATADIR):
+    """Reads and returns list of equialized histogram of images.
+
+    Args:
+      DATADIR: Directory of the images. This should be the absolute path.
+    Returns:
+      3D numpy array.
+    """
     X = []
-    y = []
     for img in os.listdir(DATADIR):
         if img.endswith(".tif"):
             image = io.imread(os.path.join(DATADIR,img),as_gray=True) #Read the image
@@ -82,38 +90,56 @@ def read_3D_volume(DATADIR):
             scaled_img = scaler.transform(image) # normalizing the image
             equalized_hist = exposure.equalize_hist(scaled_img)
             X.append(equalized_hist)
-        if '112A' in img:
-            y.append(0)
-        elif '112V' in img:
-            y.append(1)
     X = np.array(X)
-    y = np.array(y)
-    return X,y
+    return X
 
 
-# If we want n number of random box from Volume A or V:
-def N_sliced_box(image_arrays,label, n, SLICE_NUM = 25, IMG_SIZE = 50,):
-    """
-    Inputs:
-    -------
-    image_arrays: 3D np array of images.
-    n: number of random boxs generated from this function.
-    SLICE_NUM : number of slices in Z direction. default is 50 if not specified.
-    IMG_SIZE: image size in X,Y directions. default is 50 if not specified.
+def N_sliced_box(image_arrays,label, n, SLICE_NUM, IMG_SIZE):
+    """Retruns n number of randomly choosen box.
     
+     Args:
+        image_arrays: 3D np array of images.
+        n: number of random boxs generated from this function.
+        SLICE_NUM : number of slices in Z direction. default is 50 if not specified.
+        IMG_SIZE: image size in X,Y directions. default is 50 if not specified.
     Returns:
-    --------
-    Pandas DataFrame. columns=['Z','X','Y','im_array','labels'].
-    Each im_array is a randomly choosen box with volume of SLICE_NUM*IMG_SIZE*IMG_SIZE.
+        List object. ['Z','X','Y','im_array','labels'].
+        Each im_array is a randomly choosen box with volume of SLICE_NUM*IMG_SIZE*IMG_SIZE.
     """
-    #n_box = []
-    z = np.random.randint(len(image_arrays[0])-SLICE_NUM+1, size= n)
+    z = np.random.randint(len(image_arrays)-SLICE_NUM+1, size= n)
     x = np.random.randint(len(image_arrays[1])-IMG_SIZE+1, size= n)
     y = np.random.randint(len(image_arrays[2])-IMG_SIZE+1, size= n)
-    df = pd.DataFrame(columns=['Z','X','Y','im_array','labels'])
+    n_box = []
     for z,x,y in zip(z,x,y):
         box = image_arrays[z:z+SLICE_NUM,x:x+IMG_SIZE,y:y+IMG_SIZE]
-        df = df.append(pd.Series([z, x, y,box,label], index=['Z','X','Y','im_array','labels']), ignore_index=True)
-        #print(" Created volume from z= {}, x = {}, y= {}".format(z,x,y))
-        #n_box.append(box)
-    return df
+        box = np.reshape(box, (SLICE_NUM,IMG_SIZE,IMG_SIZE, 1))
+        n_box.append([z, x, y,box,label])
+    return n_box
+
+
+def prepare_3D_dataset(DATADIR, exporting_path, N , SLICE_NUM = 25, IMG_SIZE=50 ):
+    CATEGORIES = os.listdir(DATADIR)
+    print(" Reading images from directory {}, has two sub categories {}".format(DATADIR,CATEGORIES))
+    data = []
+    for category in CATEGORIES:
+        print(" Reading {} images.".format(category))
+        img_arrays = read_3D_volume(os.path.join(DATADIR,category))
+        print(" Finish reading{} images. It has {} images.".format(category, len(img_arrays)))
+        print(" Creating {} randomly choosen image volumes.".format(N))
+        box = N_sliced_box(img_arrays, category, N, SLICE_NUM, IMG_SIZE)
+        data.extend(box)   
+    random.shuffle(data)
+    print('Finished creating volume data. Now saving it into hdf5 file format') 
+    img_data = np.array([data[i][3] for i in range(len(data))])
+    label = np.array([data[i][4] for i in range(len(data))])
+    transfer_label = [np.string_(i) for i in label]
+    location_data = [[data[i][0], data[i][1], data[i][2]]for i in range(len(data))]
+    name = '{}_{}_{}_{}.h5'.format(N,SLICE_NUM,IMG_SIZE,IMG_SIZE)
+    path = os.path.join(exporting_path,name)
+    print(" Saving file with name {}, at path {}".format(name, exporting_path))
+    with h5py.File(path,'w') as f:
+        f.create_dataset('slice_location', data= location_data)
+        f.create_dataset('img_data', data= img_data)
+        f.create_dataset('labels', data= transfer_label)
+        f.close()
+    return
